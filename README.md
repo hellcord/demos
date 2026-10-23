@@ -1,6 +1,7 @@
 # Демки HellCord
 
-Живой код из шортсов сервера [HellCord](https://discord.gg/hellcord). Каждая демка — одна папка со статической
+Живой код из шортсов сервера [HellCord](https://discord.gg/hellcord). Шортсы — на YouTube:
+[@hellcord-server](https://www.youtube.com/@hellcord-server). Каждая демка — одна папка со статической
 страницей, без сборки и зависимостей. Сайт: https://hellcord.github.io/demos/
 
 | Демка | Что | Шортс |
