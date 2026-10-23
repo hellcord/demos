@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>new Audio против Web Audio — демо HellCord</title>
+<meta name="description" content="Жми быстро и слушай разницу: new Audio теряет звуки, Web Audio — нет. Плюс драм-машина с точным расписанием.">
+<style>
+  :root { --bg: #090b0f; --card: #11151c; --edge: #252d3a; --ink: #ece6d8; --dim: #7b8594; --amber: #ffb31a; --red: #ff3d3d; --green: #38e08a; --blue: #63b6ff; --violet: #b48cff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-monospace, "JetBrains Mono", Menlo, monospace; padding: 32px 16px 64px; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 30px; margin: 0 0 6px; } h2 { font-size: 20px; margin: 36px 0 10px; }
+  p { color: var(--dim); margin: 0 0 16px; }
+  a { color: var(--amber); }
+  .links { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 24px; }
+  .links a { border: 2px solid var(--edge); border-radius: 999px; padding: 4px 14px; color: var(--ink); text-decoration: none; }
+  .links a:hover { border-color: var(--amber); }
+  .duel { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .side { background: var(--card); border: 2px solid var(--edge); border-radius: 16px; padding: 16px; }
+  .side button.big { width: 100%; height: 120px; border-radius: 14px; font-family: inherit; font-weight: 800; font-size: 22px; line-height: 1.2; cursor: pointer; border: 3px solid; background: transparent; touch-action: manipulation; }
+  .side.bad button.big { color: var(--red); border-color: var(--red); }
+  .side.good button.big { color: var(--green); border-color: var(--green); }
+  .side button.big:active { transform: scale(.97); }
+  .stat { margin-top: 10px; color: var(--dim); } .stat b { color: var(--ink); }
+  pre { background: #05070a; border: 2px solid var(--edge); border-radius: 12px; padding: 12px 14px; overflow: auto; font-size: 13px; margin: 10px 0 0; }
+  .k { color: var(--violet); } .f { color: var(--blue); } .n { color: var(--amber); } .c { color: var(--dim); }
+  .seq { background: var(--card); border: 2px solid var(--edge); border-radius: 16px; padding: 16px; }
+  .row { display: grid; grid-template-columns: 56px repeat(16, 1fr); gap: 4px; margin-bottom: 6px; align-items: center; }
+  .row span { color: var(--dim); font-size: 13px; }
+  .cell { aspect-ratio: 1; border-radius: 5px; border: 2px solid var(--edge); background: transparent; cursor: pointer; padding: 0; }
+  .cell:nth-child(4n+2) { border-color: #36404f; }
+  .cell.on { background: var(--amber); border-color: var(--amber); }
+  .cell.now { outline: 2px solid var(--ink); outline-offset: 1px; }
+  .ctl { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; }
+  .ctl button { background: none; border: 2px solid var(--edge); color: var(--ink); border-radius: 999px; padding: 6px 18px; font: inherit; cursor: pointer; }
+  .ctl button:hover { border-color: var(--amber); }
+  input[type=range] { accent-color: var(--amber); }
+  @media (max-width: 560px) { .duel { grid-template-columns: 1fr; } .row { grid-template-columns: 40px repeat(16, 1fr); gap: 2px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>new Audio <span style="color:var(--dim)">против</span> Web Audio</h1>
+  <p>Демо к шортсу HellCord. Жми обе кнопки быстро-быстро и слушай: один и тот же звук, разный результат.</p>
+  <nav class="links">
+    <a href="https://www.youtube.com/@hellcord-server" target="_blank" rel="noopener">▶ YouTube</a>
+    <a href="https://discord.gg/hellcord" target="_blank" rel="noopener">Discord</a>
+    <a href="../">все демки</a>
+  </nav>
+
+  <div class="duel">
+    <div class="side bad">
+      <button class="big" id="bad">new Audio<br>💥</button>
+      <div class="stat">нажато <b id="badTap">0</b> · прозвучало <b id="badPlay">0</b></div>
+      <pre><span class="k">const</span> s = <span class="k">new</span> <span class="f">Audio</span>(url);
+btn.onclick = () =&gt; s.<span class="f">play</span>();
+<span class="c">// звучит — play() ничего не делает</span></pre>
+    </div>
+    <div class="side good">
+      <button class="big" id="good">Web Audio<br>💥</button>
+      <div class="stat">нажато <b id="goodTap">0</b> · прозвучало <b id="goodPlay">0</b></div>
+      <pre>btn.onclick = () =&gt; {
+  <span class="k">const</span> src = ctx.<span class="f">createBufferSource</span>();
+  src.buffer = buf; <span class="c">// один на всех</span>
+  src.<span class="f">connect</span>(ctx.destination);
+  src.<span class="f">start</span>();
+};</pre>
+    </div>
+  </div>
+
+  <h2>Драм-машина: точное время</h2>
+  <p>Ноты планируются заранее по часам аудиоконтекста — <code>src.start(ctx.currentTime + …)</code>. Таймер JS только подкладывает их на 0,1 с вперёд, поэтому ритм не плывёт, даже если вкладка нагружена.</p>
+  <div class="seq" id="seq"></div>
+</main>
+<script>
+// Звуки синтезируются здесь же: один буфер на звук, AudioBufferSourceNode — на каждое воспроизведение.
+let ctx = null;
+const bufs = {};
+const SR = 44100;
+
+function synth(len, fn) {
+  const n = Math.floor(len * SR), a = new Float32Array(n);
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;
+  let ph = 0, lp = 0;
+  for (let i = 0; i < n; i++) a[i] = fn(i / SR, rnd, (f) => (ph += 2 * Math.PI * f / SR), (x, k) => (lp += (x - lp) * k));
+  return a;
+}
+const SOUNDS = {
+  shot: () => synth(.32, (t, r, osc, lp) => (Math.sin(osc(1400 * Math.exp(-t * 14) + 120)) * .7 + lp(r(), .5) * .4) * Math.exp(-t * 12) * .8),
+  kick: () => synth(.4, (t, r, osc) => Math.sin(osc(50 + 110 * Math.exp(-t * 30))) * Math.exp(-t * 8)),
+  snare: () => synth(.25, (t, r, osc, lp) => (Math.sin(osc(190)) * .5 * Math.exp(-t * 25) + lp(r(), .6) * Math.exp(-t * 18)) * .7),
+  hat: () => synth(.08, (t, r, osc, lp) => { const x = r(); return (x - lp(x, .3)) * Math.exp(-t * 60) * .5; }),
+};
+
+function wavUrl(a) {
+  const dv = new DataView(new ArrayBuffer(44 + a.length * 2));
+  const w = (o, s) => [...s].forEach((c, i) => dv.setUint8(o + i, c.charCodeAt(0)));
+  w(0, 'RIFF'); dv.setUint32(4, 36 + a.length * 2, true); w(8, 'WAVEfmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, SR, true); dv.setUint32(28, SR * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  w(36, 'data'); dv.setUint32(40, a.length * 2, true);
+  a.forEach((x, i) => dv.setInt16(44 + i * 2, Math.max(-1, Math.min(1, x)) * 32767, true));
+  return URL.createObjectURL(new Blob([dv], {type: 'audio/wav'}));
+}
+
+// Аудиоконтекст — только после жеста пользователя (политика автозапуска браузеров).
+function audio() {
+  if (!ctx) {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    for (const [k, make] of Object.entries(SOUNDS)) {
+      const data = make(), b = ctx.createBuffer(1, data.length, SR);
+      b.copyToChannel(data, 0);
+      bufs[k] = b;
+    }
+  }
+  if (ctx.state === 'suspended') ctx.resume();
+  return ctx;
+}
+function play(name, when = 0) {
+  const c = audio(), src = c.createBufferSource();
+  src.buffer = bufs[name];
+  src.connect(c.destination);
+  src.start(when);
+}
+
+// Дуэль.
+const el = new Audio(wavUrl(SOUNDS.shot()));
+const n = {badTap: 0, badPlay: 0, goodTap: 0, goodPlay: 0};
+const show = () => Object.entries(n).forEach(([k, v]) => (document.getElementById(k).textContent = v));
+el.addEventListener('playing', () => { n.badPlay++; show(); });
+const press = (id, fn) => document.getElementById(id).addEventListener('pointerdown', (e) => { e.preventDefault(); fn(); show(); });
+press('bad', () => { n.badTap++; el.play().catch(() => {}); });
+press('good', () => { n.goodTap++; play('shot'); n.goodPlay++; });
+
+// Драм-машина: планировщик с упреждением («A Tale of Two Clocks»).
+const ROWS = ['kick', 'snare', 'hat'];
+const pat = {
+  kick:  [1,0,0,0, 0,0,1,0, 1,0,0,0, 0,0,0,0],
+  snare: [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1],
+  hat:   [1,0,1,0, 1,0,1,0, 1,0,1,1, 1,0,1,0],
+};
+const seq = document.getElementById('seq');
+const cells = {};
+for (const r of ROWS) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = `<span>${r}</span>`;
+  cells[r] = pat[r].map((on, i) => {
+    const b = document.createElement('button');
+    b.className = 'cell' + (on ? ' on' : '');
+    b.setAttribute('aria-label', `${r} ${i + 1}`);
+    b.onclick = () => { pat[r][i] ^= 1; b.classList.toggle('on'); };
+    row.appendChild(b);
+    return b;
+  });
+  seq.appendChild(row);
+}
+const ctl = document.createElement('div');
+ctl.className = 'ctl';
+ctl.innerHTML = '<button id="go">▶ играть</button><label>темп <input id="bpm" type="range" min="70" max="180" value="110"> <b id="bpmv">110</b></label>';
+seq.appendChild(ctl);
+
+let timer = 0, step = 0, next = 0;
+const queue = [];
+const bpm = document.getElementById('bpm');
+bpm.oninput = () => (document.getElementById('bpmv').textContent = bpm.value);
+function schedule() {
+  const c = audio(), dur = 60 / bpm.value / 4;
+  while (next < c.currentTime + 0.1) {
+    for (const r of ROWS) if (pat[r][step]) play(r, next);
+    queue.push({step, time: next});
+    next += dur;
+    step = (step + 1) % 16;
+  }
+}
+let shown = -1;
+function draw() {
+  if (ctx) while (queue.length && queue[0].time <= ctx.currentTime) {
+    const s = queue.shift().step;
+    for (const r of ROWS) { cells[r][s].classList.add('now'); if (shown >= 0) cells[r][shown].classList.remove('now'); }
+    shown = s;
+  }
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+document.getElementById('go').onclick = (e) => {
+  if (timer) {
+    clearInterval(timer); timer = 0; queue.length = 0; e.target.textContent = '▶ играть';
+    if (shown >= 0) for (const r of ROWS) cells[r][shown].classList.remove('now');
+    shown = -1;
+    return;
+  }
+  const c = audio();
+  step = 0; next = c.currentTime + 0.05;
+  timer = setInterval(schedule, 25);
+  schedule();
+  e.target.textContent = '■ стоп';
+};
+</script>
+</body>
+</html>
