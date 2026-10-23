@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Демки HellCord</title>
+<style>
+  :root { --bg: #090b0f; --card: #11151c; --edge: #252d3a; --ink: #ece6d8; --dim: #7b8594; --amber: #ffb31a; --violet: #b48cff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); font: 16px/1.5 ui-monospace, "JetBrains Mono", Menlo, monospace; padding: 48px 16px; }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 40px; margin: 0 0 8px; } h1 span { color: var(--violet); }
+  p { color: var(--dim); margin: 0 0 32px; }
+  a.card { display: block; background: var(--card); border: 2px solid var(--edge); border-radius: 16px; padding: 18px 22px; margin-bottom: 14px; color: var(--ink); text-decoration: none; }
+  a.card:hover { border-color: var(--amber); }
+  a.card b { color: var(--amber); } a.card small { display: block; color: var(--dim); }
+  a { color: var(--amber); }
+</style>
+</head>
+<body>
+<main>
+  <h1><span>&lt;/</span>HΞLL::CORD<span>&gt;</span> демки</h1>
+  <p>Живой код из наших шортсов. Открывай, меняй, ломай. Обсуждаем в <a href="https://discord.gg/hellcord">discord.gg/hellcord</a>.</p>
+  <a class="card" href="shader-flower/"><b>Неоновый цветок</b> · WebGL / GLSL<small>8 строк фрагментного шейдера из шортса «Это не видео. Это 8 строк кода». Код можно править прямо на странице.</small></a>
+</main>
+</body>
+</html>

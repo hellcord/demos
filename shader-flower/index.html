@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Неоновый цветок — шейдер HellCord</title>
+<meta name="description" content="Фрагментный шейдер из шортса HellCord: 8 строк GLSL. Меняй код — картинка обновляется сразу.">
+<style>
+  :root { --bg: #090b0f; --card: #11151ce6; --edge: #252d3a; --ink: #ece6d8; --dim: #7b8594; --amber: #ffb31a; --red: #ff3d3d; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-monospace, "JetBrains Mono", Menlo, monospace; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .panel { position: fixed; left: 16px; right: 16px; bottom: 16px; max-width: 560px; background: var(--card); border: 2px solid var(--edge); border-radius: 16px; backdrop-filter: blur(8px); overflow: hidden; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 2px solid var(--edge); }
+  .bar b { color: var(--amber); }
+  .bar .sp { flex: 1; }
+  button, a.btn { background: none; border: 2px solid var(--edge); color: var(--ink); border-radius: 999px; padding: 4px 12px; font: inherit; cursor: pointer; text-decoration: none; }
+  button:hover, a.btn:hover { border-color: var(--amber); }
+  textarea { display: block; width: 100%; height: 260px; overflow: auto; resize: vertical; background: transparent; color: var(--ink); border: 0; outline: 0; padding: 12px 14px; font: inherit; font-size: 14px; white-space: pre; tab-size: 2; }
+  .err { color: var(--red); padding: 0 14px 10px; white-space: pre-wrap; font-size: 13px; }
+  .err:empty { display: none; }
+  .hidden textarea, .hidden .err { display: none; }
+  .hint { color: var(--dim); padding: 0 14px 12px; font-size: 13px; }
+  .hidden .hint { display: none; }
+  @media (max-width: 600px) {
+    textarea { height: 200px; font-size: 12px; }
+    .lang { display: none; }
+    button, a.btn { padding: 3px 10px; font-size: 13px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="panel" id="panel">
+  <div class="bar">
+    <b>shader.frag</b><span class="lang">· GLSL</span><span class="sp"></span>
+    <button id="reset" title="Вернуть исходный код">сброс</button>
+    <button id="toggle">скрыть</button>
+    <a class="btn" href="https://discord.gg/hellcord" target="_blank" rel="noopener">HellCord</a>
+  </div>
+  <textarea id="code" spellcheck="false" aria-label="Код фрагментного шейдера"></textarea>
+  <div class="err" id="err"></div>
+  <div class="hint">R — размер холста в пикселях, T — время в секундах. Меняй числа — картинка обновится сразу.</div>
+</div>
+<script>
+// Шейдер из шортса HellCord «Это не видео. Это 8 строк кода» — тот же код, что исполнялся при рендере ролика.
+const SOURCE = `void main() {
+  vec2 p = (2.*gl_FragCoord.xy - R) / R.y;
+  float r = length(p);
+  float a = atan(p.y, p.x);
+  float f = r + .15*sin(6.*a + T);
+  float g = .02 / abs(fract(4.*f - .5*T) - .5);
+  vec3 k = vec3(0, .1, .2);
+  vec3 c = .5 + .5*cos(6.3*(f + .1*T + k));
+  gl_FragColor = vec4(c * g * exp(-r), 1);
+}`;
+const HEADER = 'precision highp float;\nuniform vec2 R;\nuniform float T;\n';
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl', {antialias: false});
+const code = document.getElementById('code');
+const err = document.getElementById('err');
+if (!gl) { err.textContent = 'WebGL недоступен в этом браузере'; throw new Error('no webgl'); }
+
+// Два треугольника на весь экран — вся картинка во фрагментном шейдере.
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+
+function shader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+
+let prog = null, uR = null, uT = null;
+function build(src) {
+  try {
+    const p = gl.createProgram();
+    gl.attachShader(p, shader(gl.VERTEX_SHADER, 'attribute vec2 v; void main() { gl_Position = vec4(v, 0., 1.); }'));
+    gl.attachShader(p, shader(gl.FRAGMENT_SHADER, HEADER + src));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    gl.useProgram(p);
+    const loc = gl.getAttribLocation(p, 'v');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    if (prog) gl.deleteProgram(prog);
+    prog = p; uR = gl.getUniformLocation(p, 'R'); uT = gl.getUniformLocation(p, 'T');
+    err.textContent = '';
+  } catch (e) {
+    // Ошибка — показываем лог, а рисуем последний рабочий вариант.
+    err.textContent = String(e.message).replace(/ERROR: 0:(\d+)/g, (_, n) => 'строка ' + (n - 3));
+  }
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(innerWidth * dpr);
+  canvas.height = Math.round(innerHeight * dpr);
+}
+addEventListener('resize', resize);
+resize();
+
+const t0 = performance.now();
+function frame(now) {
+  if (prog) {
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.uniform2f(uR, canvas.width, canvas.height);
+    gl.uniform1f(uT, (now - t0) / 1000);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+  requestAnimationFrame(frame);
+}
+
+let saved = null;
+try { saved = localStorage.getItem('shader-flower'); } catch (e) {}
+code.value = saved || SOURCE;
+build(code.value);
+requestAnimationFrame(frame);
+
+let timer = 0;
+code.addEventListener('input', () => {
+  clearTimeout(timer);
+  timer = setTimeout(() => {
+    build(code.value);
+    try { localStorage.setItem('shader-flower', code.value); } catch (e) {}
+  }, 250);
+});
+document.getElementById('reset').onclick = () => {
+  code.value = SOURCE;
+  build(SOURCE);
+  try { localStorage.removeItem('shader-flower'); } catch (e) {}
+};
+document.getElementById('toggle').onclick = (e) => {
+  const hidden = document.getElementById('panel').classList.toggle('hidden');
+  e.target.textContent = hidden ? 'код' : 'скрыть';
+};
+</script>
+</body>
+</html>
