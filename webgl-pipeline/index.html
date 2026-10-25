@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebGL — это не про 3D — демо HellCord</title>
+<meta name="description" content="Конвейер WebGL 2 вживую: точки, линии и треугольники, растеризация во фрагменты, гауссовы сплаты, текстура-таблица, фреймбуфер и постобработка, миллион частиц на transform feedback.">
+<style>
+  :root { --bg: #090b0f; --card: #11151c; --edge: #252d3a; --ink: #ece6d8; --dim: #7b8594; --amber: #ffb31a; --red: #ff3d3d; --green: #38e08a; --blue: #63b6ff; --violet: #b48cff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-monospace, "JetBrains Mono", Menlo, monospace; padding: 32px 16px 64px; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  p { color: var(--dim); margin: 0 0 16px; }
+  a { color: var(--amber); }
+  .links { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 24px; }
+  .links a { border: 2px solid var(--edge); border-radius: 999px; padding: 4px 14px; color: var(--ink); text-decoration: none; }
+  .links a:hover { border-color: var(--amber); }
+  .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  button, select { background: none; border: 2px solid var(--edge); color: var(--ink); border-radius: 999px; padding: 6px 14px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--amber); }
+  button.on { background: var(--amber); border-color: var(--amber); color: #000; font-weight: 700; }
+  .stage { position: relative; background: #05070a; border: 2px solid var(--edge); border-radius: 16px; overflow: hidden; aspect-ratio: 1; }
+  canvas { display: block; width: 100%; height: 100%; }
+  canvas.px { image-rendering: pixelated; }
+  .grid { position: absolute; inset: 0; pointer-events: none; }
+  .hud { position: absolute; top: 10px; left: 14px; right: 14px; display: flex; justify-content: space-between; color: var(--dim); font-size: 13px; pointer-events: none; }
+  .ctl { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0; }
+  .ctl label { color: var(--dim); }
+  input[type=range] { accent-color: var(--amber); }
+  pre { background: #05070a; border: 2px solid var(--edge); border-radius: 12px; padding: 12px 14px; overflow: auto; font-size: 13px; margin: 10px 0 0; white-space: pre; }
+  .table { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; max-width: 360px; margin-top: 10px; }
+  .table input { width: 100%; aspect-ratio: 1; text-align: center; font: inherit; font-weight: 800; border-radius: 6px; border: 2px solid var(--edge); }
+  .err { color: var(--red); }
+</style>
+</head>
+<body>
+<main>
+  <h1>WebGL — это не про 3D</h1>
+  <p>Демо к шортсу HellCord. В WebGL нет камеры, света и куба — только растеризация: вершины → фигуры → фрагменты → цвет.
+    Всё ниже — WebGL 2 вживую, без библиотек. Код — в исходнике страницы.</p>
+  <nav class="links">
+    <a href="https://www.youtube.com/@hellcord-server" target="_blank" rel="noopener">▶ YouTube</a>
+    <a href="https://discord.gg/hellcord" target="_blank" rel="noopener">Discord</a>
+    <a href="../">все демки</a>
+  </nav>
+
+  <div class="tabs" id="tabs"></div>
+  <div class="stage" id="stage">
+    <canvas id="c"></canvas>
+    <div class="grid" id="grid"></div>
+    <div class="hud"><span id="hudL"></span><span id="hudR"></span></div>
+  </div>
+  <div class="ctl" id="ctl"></div>
+  <p id="note"></p>
+  <pre id="code"></pre>
+</main>
+
+<script>
+'use strict';
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', {antialias: true});
+const $ = (id) => document.getElementById(id);
+if (!gl) document.querySelector('main').insertAdjacentHTML('beforeend', '<p class="err">Браузер не дал WebGL 2 — демо не запустится.</p>');
+
+// ——— Помощники ———
+function program(vs, fs, varyings) {
+  const sh = (type, src) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, '#version 300 es\nprecision highp float;\n' + src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  };
+  const p = gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs));
+  if (varyings) gl.transformFeedbackVaryings(p, varyings, gl.INTERLEAVED_ATTRIBS);
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+function buffer(data, target = gl.ARRAY_BUFFER, usage = gl.STATIC_DRAW) {
+  const b = gl.createBuffer();
+  gl.bindBuffer(target, b);
+  gl.bufferData(target, data, usage);
+  return b;
+}
+function vao(prog, buf, layout, index) {
+  const v = gl.createVertexArray();
+  gl.bindVertexArray(v);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  const stride = layout.reduce((a, [, n]) => a + n, 0) * 4;
+  let off = 0;
+  for (const [name, n] of layout) {
+    const loc = gl.getAttribLocation(prog, name);
+    if (loc >= 0) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, n, gl.FLOAT, false, stride, off); }
+    off += n * 4;
+  }
+  if (index) gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index);
+  gl.bindVertexArray(null);
+  return v;
+}
+function uni(prog, u) {
+  for (const [k, v] of Object.entries(u)) {
+    const l = gl.getUniformLocation(prog, k);
+    if (v instanceof Float32Array) gl.uniformMatrix4fv(l, false, v);
+    else if (Array.isArray(v)) gl['uniform' + v.length + 'fv'](l, v);
+    else if (typeof v === 'boolean') gl.uniform1i(l, v ? 1 : 0);
+    else gl.uniform1f(l, v);
+  }
+}
+// Матрицы 4×4 по столбцам.
+const mul = (a, b) => { const o = new Float32Array(16); for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; } return o; };
+const perspective = (fy, asp, n = .1, f = 50) => { const t = 1 / Math.tan(fy / 2), nf = 1 / (n - f); return new Float32Array([t / asp, 0, 0, 0, 0, t, 0, 0, 0, 0, (f + n) * nf, -1, 0, 0, 2 * f * n * nf, 0]); };
+const translate = (x, y, z) => new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]);
+const rotX = (a) => { const c = Math.cos(a), s = Math.sin(a); return new Float32Array([1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1]); };
+const rotY = (a) => { const c = Math.cos(a), s = Math.sin(a); return new Float32Array([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1]); };
+const cam = (dist) => mul(perspective(.75, 1), translate(0, 0, -dist));
+const rng = (seed) => () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32;
+const quadBuf = () => buffer(new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]));
+
+// Тор: позиция, нормаль, цвет; индексы для линий и треугольников.
+function torus(nu = 48, nv = 20, R = 1, r = .42) {
+  const v = [];
+  for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+    const a = i / nu * Math.PI * 2, b = j / nv * Math.PI * 2, h = i / nu;
+    v.push(Math.cos(a) * (R + r * Math.cos(b)), r * Math.sin(b), Math.sin(a) * (R + r * Math.cos(b)),
+      Math.cos(a) * Math.cos(b), Math.sin(b), Math.sin(a) * Math.cos(b),
+      .5 + .5 * Math.cos(6.28 * h), .5 + .5 * Math.cos(6.28 * (h + .33)), .5 + .5 * Math.cos(6.28 * (h + .67)));
+  }
+  const id = (i, j) => ((i + nu) % nu) * nv + ((j + nv) % nv), tris = [], lines = [];
+  for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+    tris.push(id(i, j), id(i + 1, j), id(i + 1, j + 1), id(i, j), id(i + 1, j + 1), id(i, j + 1));
+    lines.push(id(i, j), id(i + 1, j), id(i, j), id(i, j + 1), id(i, j), id(i + 1, j + 1));
+  }
+  return {verts: new Float32Array(v), tris: new Uint16Array(tris), lines: new Uint16Array(lines), count: nu * nv};
+}
+
+const LIT_VS = `in vec3 p; in vec3 n; in vec3 c;
+uniform mat4 M, VP; uniform float S;
+out vec3 vn, vc;
+void main() {
+  vn = mat3(M) * n; vc = c;
+  gl_Position = VP * M * vec4(p, 1.);   // вершинный шейдер: куда попадёт вершина
+  gl_PointSize = S;
+}`;
+const LIT_FS = `in vec3 vn, vc; uniform float L; uniform bool P; out vec4 o;
+void main() {
+  if (P && length(gl_PointCoord - .5) > .5) discard;   // круглые точки
+  float d = abs(dot(normalize(vn), normalize(vec3(.5, .7, .8))));
+  vec3 lit = vc * (.2 + .8 * d) + .3 * pow(d, 40.);   // «свет» — это тоже просто формула
+  o = vec4(mix(vc, lit, L), 1.);
+}`;
+function torusScene() {
+  const t = torus(), prog = program(LIT_VS, LIT_FS);
+  return {prog, t, v: vao(prog, buffer(t.verts), [['p', 3], ['n', 3], ['c', 3]]), tri: buffer(t.tris, gl.ELEMENT_ARRAY_BUFFER), line: buffer(t.lines, gl.ELEMENT_ARRAY_BUFFER)};
+}
+function drawTorus(s, time, mode, persp = true) {
+  gl.enable(gl.DEPTH_TEST);
+  gl.useProgram(s.prog);
+  gl.bindVertexArray(s.v);
+  const M = mul(rotX(.95 + Math.sin(time) * .15), rotY(time * .6));
+  // Без матрицы перспективы — просто сплющенная проекция: никакого «3D» WebGL сам не делает.
+  const VP = persp ? cam(4.2) : new Float32Array([.42, 0, 0, 0, 0, .42, 0, 0, 0, 0, -.1, 0, 0, 0, 0, 1]);
+  uni(s.prog, {M, VP, S: 7 * devicePixelRatio, L: mode === 2 ? 1 : 0, P: mode === 0});
+  if (mode === 0) gl.drawArrays(gl.POINTS, 0, s.t.count);
+  else {
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mode === 1 ? s.line : s.tri);
+    gl.drawElements(mode === 1 ? gl.LINES : gl.TRIANGLES, mode === 1 ? s.t.lines.length : s.t.tris.length, gl.UNSIGNED_SHORT, 0);
+  }
+  gl.bindVertexArray(null);
+}
+
+// ——— Режимы ———
+const modes = {};
+const state = {prim: 2, persp: true, res: 24, wave: true, post: 2, count: 1000000, splatWire: false, table: null};
+
+modes.prim = {
+  title: 'Фигуры',
+  note: 'Одни и те же вершины, три способа собрать фигуры. Других примитивов в WebGL нет: точки, линии, треугольники (плюс их «полосы» и «веера»). Выключи перспективу — и «3D» пропадёт: это матрица, которую передаёт программа.',
+  code: LIT_VS,
+  ui() {
+    return [['POINTS', () => state.prim = 0, () => state.prim === 0], ['LINES', () => state.prim = 1, () => state.prim === 1], ['TRIANGLES', () => state.prim = 2, () => state.prim === 2], ['перспектива', () => state.persp = !state.persp, () => state.persp]];
+  },
+  init() { this.s = this.s || torusScene(); },
+  frame(t) { gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); drawTorus(this.s, t, state.prim, state.persp); },
+};
+
+const GRID_FS = `uniform float N, W; out vec4 o;
+void main() {
+  vec2 g = gl_FragCoord.xy / N;                 // этот фрагмент — клетка сетки
+  float chk = mod(floor(gl_FragCoord.x) + floor(gl_FragCoord.y), 2.) * .05;
+  vec3 pal = .5 + .5 * cos(6.2832 * (g.x * .7 + g.y * .45 + vec3(0., .33, .67)));
+  o = vec4(W > .5 ? pal : vec3(.42 + chk), 1.);
+}`;
+modes.raster = {
+  title: 'Фрагменты',
+  note: 'Холст в N×N пикселей, растянутый без сглаживания: видно, какие клетки накрыл треугольник. Каждая такая клетка — фрагмент, и для каждого запускается фрагментный шейдер.',
+  code: GRID_FS,
+  pixel: true,
+  ui() {
+    return [['цвет', () => state.wave = !state.wave, () => state.wave], ['range', 'пикселей', 6, 96, () => state.res, (v) => state.res = v]];
+  },
+  init() {
+    if (this.prog) return;
+    this.prog = program('in vec2 a; void main() { gl_Position = vec4(a, 0., 1.); }', GRID_FS);
+    this.buf = buffer(new Float32Array(6), gl.ARRAY_BUFFER, gl.DYNAMIC_DRAW);
+    this.v = vao(this.prog, this.buf, [['a', 2]]);
+  },
+  frame(t) {
+    const tri = [-.72, -.62, .8, -.4, -.12, .78], cx = -.0133, cy = -.08, c = Math.cos(t * .3), s = Math.sin(t * .3), out = [];
+    for (let i = 0; i < 3; i++) { const x = tri[i * 2] - cx, y = tri[i * 2 + 1] - cy; out.push(cx + c * x - s * y, cy + s * x + c * y); }
+    gl.clearColor(.067, .082, .11, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(this.prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(out), gl.DYNAMIC_DRAW);
+    gl.bindVertexArray(this.v);
+    uni(this.prog, {N: state.res, W: state.wave ? 1 : 0});
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  },
+};
+
+const SPLAT_VS = `in vec2 q; in vec3 ctr; in vec3 col; in float sz;
+uniform mat4 MV, P; out vec2 vq; out vec3 vc;
+void main() {
+  vec4 v = MV * vec4(ctr, 1.);
+  v.xy += q * sz;                 // квад всегда смотрит на камеру
+  gl_Position = P * v; vq = q; vc = col;
+}`;
+const SPLAT_FS = `in vec2 vq; in vec3 vc; uniform bool T; out vec4 o;
+void main() {
+  float g = exp(-dot(vq, vq) * 4.);   // гауссово пятно
+  float e = min(1. - max(abs(vq.x), abs(vq.y)), abs(vq.x - vq.y) * .7071);
+  float line = T ? 1. - smoothstep(0., fwidth(vq.x) * 1.5, e) : 0.;   // края и диагональ: два треугольника
+  o = vec4(mix(vc, vec3(1., .72, .12), line), max(g * .85, line));
+}`;
+modes.splats = {
+  title: 'Сплаты',
+  note: '3D Gaussian Splatting: сцена — облако размытых пятен. Каждое пятно — инстанс квада из 4 вершин (TRIANGLE_FAN = 2 треугольника), пятна сортируются по глубине и смешиваются альфой. Так их рисуют веб-рендереры вроде antimatter15/splat.',
+  code: SPLAT_VS + '\n\n// на каждый кадр:\ngl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 4, splatCount);',
+  ui() { return [['каркас', () => state.splatWire = !state.splatWire, () => state.splatWire]]; },
+  init() {
+    if (this.prog) return;
+    this.prog = program(SPLAT_VS, SPLAT_FS);
+    const rand = rng(3); this.pts = [];
+    for (let i = 0; i < 14000; i++) {
+      const t = rand() * Math.PI * 2, r = .62 + .28 * Math.cos(3 * t), j = () => (rand() - .5) * .28, h = t / Math.PI;
+      this.pts.push([r * Math.cos(2 * t) * 1.3 + j(), r * Math.sin(2 * t) * 1.3 + j(), .45 * Math.sin(3 * t) + j(), .5 + .5 * Math.cos(6.2832 * h), .5 + .5 * Math.cos(6.2832 * (h + .33)), .5 + .5 * Math.cos(6.2832 * (h + .67)), .035 + rand() * .07]);
+    }
+    this.v = gl.createVertexArray(); gl.bindVertexArray(this.v);
+    buffer(new Float32Array([-1, -1, 1, -1, 1, 1, -1, 1]));
+    const lq = gl.getAttribLocation(this.prog, 'q'); gl.enableVertexAttribArray(lq); gl.vertexAttribPointer(lq, 2, gl.FLOAT, false, 0, 0);
+    this.inst = buffer(new Float32Array(7 * this.pts.length), gl.ARRAY_BUFFER, gl.DYNAMIC_DRAW);
+    [['ctr', 3, 0], ['col', 3, 12], ['sz', 1, 24]].forEach(([n, k, off]) => { const l = gl.getAttribLocation(this.prog, n); gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l, k, gl.FLOAT, false, 28, off); gl.vertexAttribDivisor(l, 1); });
+    gl.bindVertexArray(null);
+  },
+  frame(t) {
+    const MV = mul(translate(0, 0, -4.4), mul(rotX(.35 + Math.sin(t * .7) * .2), rotY(t * .45)));
+    const z = this.pts.map((p) => MV[2] * p[0] + MV[6] * p[1] + MV[10] * p[2]);
+    const data = new Float32Array(7 * this.pts.length);
+    this.pts.map((_, i) => i).sort((a, b) => z[a] - z[b]).forEach((i, k) => data.set(this.pts[i], k * 7));   // сзади наперёд
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(this.prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.inst); gl.bufferSubData(gl.ARRAY_BUFFER, 0, data);
+    gl.bindVertexArray(this.v);
+    uni(this.prog, {MV, P: perspective(.75, 1), T: state.splatWire});
+    gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 4, this.pts.length);
+    gl.bindVertexArray(null); gl.disable(gl.BLEND);
+  },
+};
+
+const TABLE = [[0, 2, 3, 1, 1, 3, 2, 0], [2, 9, 8, 3, 3, 8, 9, 2], [3, 8, 9, 7, 7, 9, 8, 3], [2, 7, 9, 9, 9, 9, 7, 2], [1, 3, 7, 9, 9, 7, 3, 1], [0, 1, 3, 8, 8, 3, 1, 0], [0, 0, 1, 4, 4, 1, 0, 0], [0, 0, 0, 1, 1, 0, 0, 0]];
+const PAL = (v) => [.08 + .92 * v, .1 + .62 * v * v, .2 + v * (1 - v)];
+const TEX_FS = `in vec3 vp, vn; uniform sampler2D X; out vec4 o;
+void main() {
+  vec3 a = abs(vp);
+  vec2 uv = a.x > a.y && a.x > a.z ? vp.zy : a.y > a.z ? vp.xz : vp.xy;
+  float v = texture(X, uv * .5 + .5).r * 255. / 9.;   // в текстуре — числа 0…9, не цвета
+  vec3 c = vec3(.08 + .92 * v, .1 + .62 * v * v, .2 + v * (1. - v));   // цвет придумывает шейдер
+  float d = abs(dot(normalize(vn), normalize(vec3(.5, .7, .8))));
+  o = vec4(c * (.35 + .65 * d), 1.);
+}`;
+modes.tex = {
+  title: 'Текстура',
+  note: 'Текстура — таблица чисел 8×8 (формат R8: один байт на клетку). Поменяй число — шейдер прочитает новое значение в следующем кадре. Цвет из числа делает сам шейдер.',
+  code: TEX_FS,
+  ui() { return []; },
+  init() {
+    if (!state.table) state.table = TABLE.map((r) => r.slice());
+    this.renderTable();
+    if (this.prog) return;
+    this.prog = program(`in vec3 p; in vec3 n; uniform mat4 M, VP; out vec3 vp, vn;
+void main() { vp = p; vn = mat3(M) * n; gl_Position = VP * M * vec4(p, 1.); }`, TEX_FS);
+    const out = [];
+    for (const [ax, sg] of [[0, 1], [0, -1], [1, 1], [1, -1], [2, 1], [2, -1]]) {
+      const u = (ax + 1) % 3, w = (ax + 2) % 3, P = (i, j) => { const p = [0, 0, 0]; p[ax] = sg; p[u] = i; p[w] = j * sg; return p; }, nn = [0, 0, 0]; nn[ax] = sg;
+      for (const p of [P(-1, -1), P(1, -1), P(1, 1), P(-1, -1), P(1, 1), P(-1, 1)]) out.push(...p, ...nn);
+    }
+    this.v = vao(this.prog, buffer(new Float32Array(out)), [['p', 3], ['n', 3]]);
+    this.tex = gl.createTexture();
+  },
+  upload() {
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 8, 8, 0, gl.RED, gl.UNSIGNED_BYTE, new Uint8Array(state.table.slice().reverse().flat()));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  },
+  renderTable() {
+    const box = document.createElement('div'); box.className = 'table';
+    state.table.forEach((row, y) => row.forEach((d, x) => {
+      const inp = document.createElement('input'); inp.value = d; inp.inputMode = 'numeric'; inp.maxLength = 1;
+      const paint = () => { const v = state.table[y][x] / 9, c = PAL(v).map((k) => Math.round(k * 255)); inp.style.background = `rgb(${c})`; inp.style.color = v > .55 ? '#000' : '#ece6d8'; };
+      inp.oninput = () => { const n = Math.max(0, Math.min(9, parseInt(inp.value, 10) || 0)); state.table[y][x] = n; inp.value = n; paint(); };
+      paint(); box.appendChild(inp);
+    }));
+    $('ctl').appendChild(box);
+  },
+  frame(t) {
+    this.upload();
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); gl.enable(gl.DEPTH_TEST);
+    gl.useProgram(this.prog); gl.bindVertexArray(this.v);
+    uni(this.prog, {M: mul(rotX(.5), rotY(.5 + t * .7)), VP: cam(4.6)});
+    gl.drawArrays(gl.TRIANGLES, 0, 36);
+    gl.bindVertexArray(null);
+  },
+};
+
+const POST_FS = `in vec2 uv; uniform sampler2D X; uniform vec2 R; uniform float M, T; out vec4 o;
+vec3 blur(vec2 u, float r) {
+  vec3 s = vec3(0.); float w = 0.;
+  for (int i = -6; i <= 6; i++) for (int j = -6; j <= 6; j++) {
+    vec2 d = vec2(i, j); float k = exp(-dot(d, d) / 18.);
+    s += texture(X, u + d * r / R).rgb * k; w += k;
+  }
+  return s / w;
+}
+void main() {
+  vec2 u = uv;
+  if (M == 3.) { vec2 c = u - .5; u = .5 + c * (1. + .22 * dot(c, c) * 4.); }   // выпуклый кинескоп
+  vec3 col = texture(X, u).rgb;                     // кадр, нарисованный в текстуру
+  if (M == 1.) col = blur(u, 2.2);                                            // размытие
+  if (M == 2.) col += max(blur(u, 3.5) - .45, 0.) * 2.4;                      // свечение
+  if (M == 3.) {                                                              // старый телевизор
+    col.r = texture(X, u + vec2(.004, 0.)).r; col.b = texture(X, u - vec2(.004, 0.)).b;
+    col *= .72 + .28 * sin(u.y * R.y * 1.15);
+    col *= 1. - 1.4 * dot(u - .5, u - .5);
+    col += .03 * sin(T * 40. + u.y * 30.);
+    if (any(lessThan(u, vec2(0.))) || any(greaterThan(u, vec2(1.)))) col = vec3(0.);
+  }
+  o = vec4(col, 1.);
+}`;
+modes.post = {
+  title: 'Постобработка',
+  note: 'Проход 1: тор рисуется не на экран, а в текстуру фреймбуфера. Проход 2: два треугольника на весь экран читают эту текстуру и меняют каждый пиксель.',
+  code: POST_FS,
+  ui() { return ['нет', 'размытие', 'свечение', 'телевизор'].map((n, i) => [n, () => state.post = i, () => state.post === i]); },
+  init() {
+    this.s = this.s || torusScene();
+    if (this.prog) return;
+    this.prog = program('in vec2 a; out vec2 uv; void main() { uv = a * .5 + .5; gl_Position = vec4(a, 0., 1.); }', POST_FS);
+    this.v = vao(this.prog, quadBuf(), [['a', 2]]);
+    this.fb = gl.createFramebuffer(); this.tex = gl.createTexture(); this.depth = gl.createRenderbuffer(); this.w = 0;
+  },
+  target(w, h) {
+    if (this.w === w && this.h === h) return;
+    this.w = w; this.h = h;
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, this.depth); gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.tex, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.depth);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  },
+  frame(t) {
+    const w = canvas.width, h = canvas.height;
+    this.target(w, h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.fb);             // проход 1 — в текстуру
+    gl.clearColor(.02, .025, .04, 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    drawTorus(this.s, t, 2);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);                // проход 2 — на экран
+    gl.disable(gl.DEPTH_TEST);
+    gl.useProgram(this.prog); gl.bindVertexArray(this.v);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    uni(this.prog, {R: [w, h], M: state.post, T: t});
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    gl.bindVertexArray(null);
+  },
+};
+
+const SIM_VS = `in vec4 s; uniform float T; out vec4 o;
+void main() {
+  // Отображение Клиффорда: каждый кадр частица прыгает в новую точку, параметры медленно плывут.
+  float a = -1.7 + .25 * sin(T * .31), b = 1.8 + .2 * cos(T * .23), c = -1.9 + .3 * sin(T * .17), d = -.4 + .3 * cos(T * .29);
+  vec2 p = s.xy * 2.4;
+  vec2 q = vec2(sin(a * p.y) + c * cos(a * p.x), sin(b * p.x) + d * cos(b * p.y)) / 2.4;
+  o = vec4(q, q - s.xy);   // это не рисуется: transform feedback пишет o в другой буфер
+}`;
+modes.tf = {
+  title: 'Частицы',
+  note: 'Transform feedback (только WebGL 2): вершинный шейдер обновляет частицы, результат пишется в буфер, растеризация выключена (RASTERIZER_DISCARD). Буферы меняются местами каждый кадр, а рисуются отдельным проходом точками.',
+  code: SIM_VS + `\n\n// JS, каждый кадр:\ngl.enable(gl.RASTERIZER_DISCARD);\ngl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, next);\ngl.beginTransformFeedback(gl.POINTS);\ngl.drawArrays(gl.POINTS, 0, count);\ngl.endTransformFeedback();`,
+  ui() { return [['range', 'частиц, тыс.', 100, 4000, () => state.count / 1000, (v) => { state.count = v * 1000; this.alloc(); }]]; },
+  init() {
+    if (!this.sim) {
+      this.sim = program(SIM_VS, 'out vec4 o; void main() { o = vec4(0.); }', ['o']);
+      this.drw = program(`in vec4 s; out vec3 vc;
+void main() { gl_Position = vec4(s.xy * .78, 0., 1.); gl_PointSize = 1.; vc = mix(vec3(.25, .45, 1.), vec3(1., .65, .15), clamp(length(s.zw) * 1.2, 0., 1.)); }`,
+      'in vec3 vc; uniform float A; out vec4 o; void main() { o = vec4(vc * A, 1.); }');
+      this.tfo = gl.createTransformFeedback();
+    }
+    if (this.n !== state.count) this.alloc();
+  },
+  alloc() {
+    const n = this.n = state.count, rand = rng(42), init = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) { init[i * 4] = rand() * 2 - 1; init[i * 4 + 1] = rand() * 2 - 1; }
+    (this.bufs || []).forEach((b) => gl.deleteBuffer(b));
+    this.bufs = [buffer(init, gl.ARRAY_BUFFER, gl.DYNAMIC_COPY), buffer(init, gl.ARRAY_BUFFER, gl.DYNAMIC_COPY)];
+    this.simV = this.bufs.map((b) => vao(this.sim, b, [['s', 4]]));
+    this.drwV = this.bufs.map((b) => vao(this.drw, b, [['s', 4]]));
+    this.cur = 0;
+  },
+  frame(t) {
+    gl.useProgram(this.sim);
+    gl.enable(gl.RASTERIZER_DISCARD);
+    uni(this.sim, {T: t});
+    gl.bindVertexArray(this.simV[this.cur]);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);   // буфер-приёмник не должен висеть ни на какой другой точке привязки
+    gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, this.tfo);
+    gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, this.bufs[1 - this.cur]);
+    gl.beginTransformFeedback(gl.POINTS);
+    gl.drawArrays(gl.POINTS, 0, this.n);
+    gl.endTransformFeedback();
+    gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, null);
+    gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+    gl.disable(gl.RASTERIZER_DISCARD);
+    this.cur = 1 - this.cur;
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+    gl.useProgram(this.drw); gl.bindVertexArray(this.drwV[this.cur]);
+    // Точка в 1 пиксель попадает в один сэмпл из SAMPLES (MSAA) — яркость делим обратно.
+    uni(this.drw, {A: .3 * 1e6 / this.n * Math.min(1, (canvas.width * canvas.height) / 9e5) * Math.max(1, gl.getParameter(gl.SAMPLES))});
+    gl.drawArrays(gl.POINTS, 0, this.n);
+    gl.bindVertexArray(null); gl.disable(gl.BLEND);
+    $('hudR').textContent = this.n.toLocaleString('ru-RU') + ' частиц';
+  },
+};
+
+// ——— Оболочка: вкладки, кнопки, цикл ———
+let cur = 'prim';
+function buildUI() {
+  const m = modes[cur];
+  $('tabs').innerHTML = '';
+  for (const [k, mm] of Object.entries(modes)) {
+    const b = document.createElement('button'); b.textContent = mm.title; b.className = k === cur ? 'on' : '';
+    b.onclick = () => { cur = k; buildUI(); }; $('tabs').appendChild(b);
+  }
+  $('ctl').innerHTML = '';
+  const refresh = [];
+  for (const it of m.ui()) {
+    if (it[0] === 'range') {
+      const [, label, min, max, get, set] = it;
+      const l = document.createElement('label'), r = document.createElement('input'), out = document.createElement('b');
+      r.type = 'range'; r.min = min; r.max = max; r.value = get(); out.textContent = get();
+      r.oninput = () => { set(+r.value); out.textContent = r.value; };
+      l.append(label + ' ', r, ' ', out); $('ctl').appendChild(l);
+    } else {
+      const [label, act, on] = it, b = document.createElement('button'); b.textContent = label;
+      const upd = () => b.className = on() ? 'on' : ''; refresh.push(upd); upd();
+      b.onclick = () => { act(); refresh.forEach((f) => f()); }; $('ctl').appendChild(b);
+    }
+  }
+  $('note').textContent = m.note;
+  $('code').textContent = m.code;
+  $('hudL').textContent = 'WebGL 2 · ' + m.title.toLowerCase();
+  $('hudR').textContent = '';
+  canvas.className = m.pixel ? 'px' : '';
+  m.init();
+}
+function resize() {
+  const m = modes[cur], css = canvas.clientWidth;
+  const size = m.pixel ? state.res : Math.round(css * Math.min(devicePixelRatio, 2));
+  if (canvas.width !== size) { canvas.width = canvas.height = size; }
+  const g = $('grid');
+  g.style.backgroundImage = m.pixel ? 'linear-gradient(#000a 1px, transparent 1px), linear-gradient(90deg, #000a 1px, transparent 1px)' : 'none';
+  g.style.backgroundSize = `${css / state.res}px ${css / state.res}px`;
+}
+function loop(ms) {
+  try {
+    resize();
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    modes[cur].frame(ms / 1000);
+  } catch (e) { $('note').innerHTML = '<span class="err">' + e.message + '</span>'; return; }
+  requestAnimationFrame(loop);
+}
+if (gl) { buildUI(); requestAnimationFrame(loop); }
+</script>
+</body>
+</html>
