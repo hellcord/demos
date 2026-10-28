@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Массив против связного списка — демо HellCord</title>
+<meta name="description" content="Гонка в браузере: вставка в середину массива и связного списка. Узлы подряд, узлы вперемешку и указатель, который уже в руках.">
+<style>
+  :root { --bg: #090b0f; --card: #11151c; --edge: #252d3a; --ink: #ece6d8; --dim: #7b8594; --amber: #ffb31a; --red: #ff3d3d; --green: #38e08a; --blue: #63b6ff; --violet: #b48cff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-monospace, "JetBrains Mono", Menlo, monospace; padding: 32px 16px 64px; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  p { color: var(--dim); margin: 0 0 16px; }
+  a { color: var(--amber); }
+  .links { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 24px; }
+  .links a { border: 2px solid var(--edge); border-radius: 999px; padding: 4px 14px; color: var(--ink); text-decoration: none; }
+  .links a:hover { border-color: var(--amber); }
+  button, select { background: none; border: 2px solid var(--edge); color: var(--ink); border-radius: 999px; padding: 6px 14px; font: inherit; cursor: pointer; }
+  button:hover, select:hover { border-color: var(--amber); }
+  button.go { background: var(--amber); border-color: var(--amber); color: #000; font-weight: 700; }
+  button:disabled { opacity: .5; cursor: default; }
+  select option { background: var(--card); }
+  .ctl { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0 20px; }
+  .ctl label { color: var(--dim); }
+  .lane { background: var(--card); border: 2px solid var(--edge); border-radius: 14px; padding: 12px 16px; margin-bottom: 12px; }
+  .lane .top { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+  .lane b { font-size: 16px; }
+  .lane small { display: block; color: var(--dim); }
+  .lane .t { font-weight: 800; font-size: 20px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bar { height: 14px; background: #05070a; border-radius: 8px; margin-top: 8px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; border-radius: 8px; }
+  .x { color: var(--dim); font-size: 13px; }
+  pre { background: #05070a; border: 2px solid var(--edge); border-radius: 12px; padding: 12px 14px; overflow: auto; font-size: 13px; margin: 10px 0 0; white-space: pre; }
+  h2 { font-size: 18px; margin: 28px 0 8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Массив против связного списка</h1>
+  <p>Демо к шортсу HellCord. Учебник говорит: вставка в середину списка — O(1), массива — O(n). Запусти гонку и
+    посмотри, кто быстрее на самом деле. Всё считается в твоём браузере, в отдельном потоке.</p>
+  <nav class="links">
+    <a href="https://www.youtube.com/@hellcord-server" target="_blank" rel="noopener">▶ YouTube</a>
+    <a href="https://discord.gg/hellcord" target="_blank" rel="noopener">Discord</a>
+    <a href="../">все демки</a>
+  </nav>
+
+  <div class="ctl">
+    <label>элементов <select id="n"><option>10000</option><option>100000</option><option selected>1000000</option></select></label>
+    <label>вставок в середину <select id="k"><option>1000</option><option selected>10000</option></select></label>
+    <button class="go" id="go">▶ гонка</button>
+  </div>
+  <div id="lanes"></div>
+  <p id="note"></p>
+
+  <h2>Почему так</h2>
+  <p>1. O(1) — это только сама вставка. До середины списка ещё надо дойти: номеров нет, только «следующий». Так что
+    у обоих O(n).</p>
+  <p>2. Процессор читает память строками кэша (64–128 байт) и заранее подтягивает следующие. Массив лежит сплошной
+    полосой, сдвиг — копирование подряд. Узлы списка разбросаны: адрес следующего узнаёшь, только прочитав текущий,
+    и каждый шаг — это поход в оперативную память, в сотню раз дольше шага по кэшу.</p>
+  <p>3. Когда миф — правда: если указатель на место уже в руках (LRU-кэш, списки в ядре Linux), вставка правда
+    мгновенная. И с очень большими элементами (килобайты) список снова выигрывает.</p>
+  <p>Замеры на C++ из шортса (Apple M4 Pro): <a href="https://github.com/hellcord/demos/tree/main/list-race">bench.cpp и middle.cpp</a>.
+    Первоисточник — FAQ Бьёрна Страуструпа, <a href="https://www.stroustrup.com/bs_faq.html#list" target="_blank" rel="noopener">«Are lists evil?»</a>.</p>
+  <pre id="code"></pre>
+</main>
+
+<script id="worker" type="text/js-worker">
+'use strict';
+// Каждый участник: build() готовит структуру из n элементов, step() — одна вставка в середину.
+const LIMIT = 15000; // мс на участника; дальше — оценка по скорости
+
+function shuffled(n) {
+  const p = new Int32Array(n);
+  for (let i = 0; i < n; i++) p[i] = i;
+  let s = 12345;
+  for (let i = n - 1; i > 0; i--) { s = (s * 1103515245 + 12345) >>> 0; const j = s % (i + 1); const t = p[i]; p[i] = p[j]; p[j] = t; }
+  return p;
+}
+
+const RACERS = {
+  typed: (n, k) => { // массив чисел подряд: сдвиг правой половины одним копированием
+    const a = new Int32Array(n + k); let len = n;
+    return () => { const m = len >> 1; a.copyWithin(m + 1, m, len); a[m] = 7; len++; };
+  },
+  array: (n) => { // обычный массив JS
+    const a = new Array(n).fill(1);
+    return () => { a.splice(a.length >> 1, 0, 7); };
+  },
+  list: (n) => { // список, узлы созданы по порядку и лежат в памяти почти подряд
+    const head = { v: 0, next: null }; let p = head;
+    for (let i = 0; i < n; i++) p = p.next = { v: 1, next: null };
+    let size = n;
+    return () => { let q = head; for (let i = size >> 1; i > 0; i--) q = q.next; q.next = { v: 7, next: q.next }; size++; };
+  },
+  scattered: (n) => { // список, порядок ссылок перемешан: каждый шаг — прыжок в случайное место памяти
+    const nodes = new Array(n);
+    for (let i = 0; i < n; i++) nodes[i] = { v: 1, next: null };
+    const order = shuffled(n);
+    const head = { v: 0, next: nodes[order[0]] };
+    for (let i = 0; i < n - 1; i++) nodes[order[i]].next = nodes[order[i + 1]];
+    let size = n;
+    return () => { let q = head; for (let i = size >> 1; i > 0; i--) q = q.next; q.next = { v: 7, next: q.next }; size++; };
+  },
+  pointer: (n) => { // список, указатель на середину уже в руках: только перецепить ссылки
+    const head = { v: 0, next: null }; let p = head, mid = null;
+    for (let i = 0; i < n; i++) { p = p.next = { v: 1, next: null }; if (i === n >> 1) mid = p; }
+    return () => { mid.next = { v: 7, next: mid.next }; };
+  },
+};
+
+onmessage = ({ data: { id, n, k } }) => {
+  const step = RACERS[id](n, k);
+  const t0 = performance.now();
+  let i = 0, last = t0;
+  while (i < k) {
+    step(); i++;
+    const now = performance.now();
+    if (now - last > 50) { postMessage({ id, i, ms: now - t0 }); last = now; }
+    if (now - t0 > LIMIT) break;
+  }
+  const ms = performance.now() - t0;
+  postMessage({ id, i, ms, done: true, est: i < k ? ms / i * k : ms });
+};
+</script>
+
+<script>
+'use strict';
+const L = [
+  { id: 'typed', name: 'Массив (Int32Array)', note: 'сдвиг правой половины: copyWithin', color: 'var(--blue)' },
+  { id: 'array', name: 'Массив (Array)', note: 'splice в середину', color: 'var(--blue)' },
+  { id: 'list', name: 'Список, узлы подряд', note: 'лучший для списка случай', color: 'var(--violet)' },
+  { id: 'scattered', name: 'Список, узлы вперемешку', note: 'как в живой программе', color: 'var(--red)' },
+  { id: 'pointer', name: 'Список, указатель в руках', note: 'единственный честный O(1)', color: 'var(--green)' },
+];
+const $ = (id) => document.getElementById(id);
+const fmt = (ms) => (ms < 1 ? `${(ms * 1000).toFixed(0)} мкс` : ms < 1000 ? `${ms.toFixed(ms < 10 ? 2 : 0)} мс` : `${(ms / 1000).toFixed(1)} с`).replace('.', ',');
+$('lanes').innerHTML = L.map((l) => `<div class="lane"><div class="top"><div><b style="color:${l.color}">${l.name}</b><small>${l.note}</small></div>
+  <div class="t" id="t-${l.id}">—</div></div><div class="bar"><i id="b-${l.id}" style="background:${l.color}"></i></div><div class="x" id="x-${l.id}"></div></div>`).join('');
+const src = document.getElementById('worker').textContent;
+$('code').textContent = src.slice(src.indexOf('const RACERS'), src.indexOf('onmessage')).trim();
+
+let worker;
+$('go').onclick = async () => {
+  const n = +$('n').value, k = +$('k').value;
+  $('go').disabled = true;
+  worker?.terminate();
+  worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+  const res = {};
+  for (const l of L) { $(`t-${l.id}`).textContent = '…'; $(`b-${l.id}`).style.width = '0'; $(`x-${l.id}`).textContent = ''; }
+  $('note').textContent = 'Участники бегут по очереди, чтобы не мешать друг другу.';
+  for (const l of L) {
+    await new Promise((done) => {
+      worker.onmessage = ({ data }) => {
+        $(`b-${l.id}`).style.width = `${(data.i / k) * 100}%`;
+        $(`t-${l.id}`).textContent = fmt(data.ms);
+        if (!data.done) return;
+        res[l.id] = data.est;
+        if (data.i < k) $(`t-${l.id}`).textContent = `≈ ${fmt(data.est)}`, $(`x-${l.id}`).textContent = `остановили через ${fmt(data.ms)} на ${data.i} вставках, дальше — оценка по скорости`;
+        done();
+      };
+      worker.postMessage({ id: l.id, n, k });
+    });
+  }
+  const best = res.typed;
+  for (const l of L) {
+    const r = res[l.id] / best;
+    const x = $(`x-${l.id}`);
+    x.textContent = (l.id === 'typed' ? 'эталон' : r > 0.8 && r < 1.25 ? 'примерно как массив' : r >= 1 ? `в ${r.toFixed(r < 10 ? 1 : 0).replace('.', ',')} раз медленнее массива` : `в ${(1 / r).toFixed(0)} раз быстрее массива`) + (x.textContent ? ` · ${x.textContent}` : '');
+  }
+  $('note').textContent = `${n.toLocaleString('ru-RU')} элементов, ${k.toLocaleString('ru-RU')} вставок в середину.`;
+  $('go').disabled = false;
+};
+</script>
+</body>
+</html>
