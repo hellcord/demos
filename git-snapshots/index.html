@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Гит хранит снимки — демо HellCord</title>
+<meta name="description" content="Симулятор хранилища гита: меняй файл, коммить и смотри, как каждый изменённый файл ложится в репозиторий целиком. Потом жми git gc — похожие файлы упакуются в дельты.">
+<style>
+  :root { --bg: #090b0f; --card: #11151c; --edge: #252d3a; --ink: #ece6d8; --dim: #7b8594; --amber: #ffb31a; --red: #ff3d3d; --green: #38e08a; --blue: #63b6ff; --violet: #b48cff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.5 ui-monospace, "JetBrains Mono", Menlo, monospace; padding: 32px 16px 64px; }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 30px; margin: 0 0 6px; }
+  p { color: var(--dim); margin: 0 0 16px; }
+  a { color: var(--amber); }
+  .links { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 24px; }
+  .links a { border: 2px solid var(--edge); border-radius: 999px; padding: 4px 14px; color: var(--ink); text-decoration: none; }
+  .links a:hover { border-color: var(--amber); }
+  button { background: none; border: 2px solid var(--edge); color: var(--ink); border-radius: 999px; padding: 8px 18px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--amber); }
+  button.go { background: var(--amber); border-color: var(--amber); color: #000; font-weight: 800; }
+  button.gc { background: var(--violet); border-color: var(--violet); color: #000; font-weight: 800; }
+  button:disabled { opacity: .45; cursor: default; }
+  .ctl { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 12px 0 20px; }
+  textarea { width: 100%; height: 190px; background: #05070a; color: var(--ink); border: 2px solid var(--edge); border-radius: 14px; padding: 12px 14px; font: inherit; resize: vertical; }
+  textarea:focus { outline: none; border-color: var(--blue); }
+  .filebar { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin: 8px 2px 24px; color: var(--dim); }
+  .filebar b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .du { position: sticky; top: 12px; z-index: 5; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; background: var(--card); border: 2px solid var(--edge); border-radius: 14px; padding: 12px 18px; margin-bottom: 22px; }
+  .du .size { font-weight: 800; font-size: 26px; font-variant-numeric: tabular-nums; }
+  .du .size.big { color: var(--red); text-shadow: 0 0 24px #ff3d3d66; }
+  .du .size.ok { color: var(--green); text-shadow: 0 0 24px #38e08a66; }
+  .shelf { display: flex; flex-wrap: wrap; gap: 12px; min-height: 96px; margin-bottom: 8px; }
+  .blob { background: var(--card); border: 2px solid var(--edge); border-radius: 12px; padding: 10px 14px; min-width: 150px; }
+  .blob.v { border-color: var(--violet); }
+  .blob.v1 { border-color: var(--blue); }
+  .blob.delta { border-color: var(--green); box-shadow: 0 0 20px #38e08a44; }
+  .blob small { display: block; color: var(--dim); }
+  .blob b { font-variant-numeric: tabular-nums; }
+  .pack { display: none; margin-top: 12px; background: #0b0e13; border: 2px dashed var(--violet); border-radius: 14px; padding: 12px 16px; }
+  .pack.on { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .pack .lbl { flex-basis: 100%; color: var(--violet); font-weight: 800; }
+  .note { color: var(--dim); font-size: 13px; margin: 10px 0 0; min-height: 20px; }
+  .facts { background: var(--card); border: 2px solid var(--edge); border-radius: 14px; padding: 14px 18px; margin-top: 30px; }
+  .facts h2 { font-size: 18px; margin: 0 0 10px; }
+  .facts p { margin: 0 0 8px; }
+  code { color: var(--amber); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Гит хранит снимки</h1>
+  <p>Демо к шортсу HellCord. Это симуляция: каждый коммит кладёт изменённый файл в хранилище <b>целиком</b> —
+    дифф гит не записывает, он вычисляет его на лету. Нажми <code>git gc</code> — и похожие файлы упакуются в дельты.</p>
+  <nav class="links">
+    <a href="https://www.youtube.com/@hellcord-server" target="_blank" rel="noopener">▶ YouTube</a>
+    <a href="https://discord.gg/hellcord" target="_blank" rel="noopener">Discord</a>
+    <a href="../">все демки</a>
+  </nav>
+
+  <textarea id="file" spellcheck="false">привет, мир!
+это файл big.txt
+в нём пока три строки
+
+а вот и четвёртая</textarea>
+  <div class="filebar"><span>big.txt</span><b id="fsize">0 Б</b></div>
+
+  <div class="ctl">
+    <button class="go" id="commit">git commit</button>
+    <button class="gc" id="gc">git gc</button>
+    <button id="reset">сначала</button>
+  </div>
+
+  <div class="du"><span>du -sh .git</span><span class="size" id="du">0 КБ</span></div>
+  <div class="shelf" id="shelf"></div>
+  <div class="pack" id="pack"><span class="lbl">пак после git gc</span></div>
+  <p class="note" id="note"></p>
+
+  <div class="facts">
+    <h2>Настоящий замер из шортса (M4 Pro)</h2>
+    <p>Файл 100 МБ несжимаемого текста. <code>git add</code> + <code>git commit</code> → <code>du -sh .git</code> = 80 МБ.</p>
+    <p>Дописан один символ, ещё коммит → <b>161 МБ</b>. Гит записал весь файл заново.</p>
+    <p><code>git gc</code> (3,3 с) → снова 80 МБ: вторая версия внутри пака — дельта 4325 байт.</p>
+  </div>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const file = $('file'), fsize = $('fsize'), du = $('du'), shelf = $('shelf'), pack = $('pack'), note = $('note');
+  const bytes = () => new TextEncoder().encode(file.value).length;
+  const fmt = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + ' МБ' : n >= 1024 ? Math.round(n / 1024) + ' КБ' : n + ' Б';
+  const hex = () => Math.random().toString(16).slice(2, 10);
+  let blobs = [];       // {id, size, v, delta}
+  let packed = false;
+  let commits = 0;
+
+  const render = () => {
+    fsize.textContent = fmt(bytes());
+    let total = 0;
+    shelf.innerHTML = '';
+    pack.classList.toggle('on', packed);
+    pack.querySelectorAll('.blob').forEach((n) => n.remove());
+    for (const b of blobs) {
+      total += b.delta ?? b.size;
+      const el = document.createElement('div');
+      el.className = 'blob ' + (b.delta ? 'delta' : b.v === 1 ? 'v1' : 'v');
+      const name = b.delta ? 'blob v' + b.v + ' — дельта' : 'blob v' + b.v + ' — целиком';
+      el.innerHTML = '<small>' + name + ' · ' + b.id + '</small><b>' + fmt(b.size) + (b.delta ? ' → ' + fmt(b.delta) : '') + '</b>';
+      (packed ? pack : shelf).appendChild(el);
+    }
+    du.textContent = fmt(total);
+    du.className = 'size ' + (packed ? 'ok' : total > 6000 ? 'big' : '');
+  };
+
+  const commit = () => {
+    const size = bytes();
+    if (!size) { note.textContent = 'файл пуст — гит нечего хранить'; return; }
+    commits++;
+    blobs.push({id: hex(), size, v: commits, delta: undefined});
+    packed = false;
+    note.textContent = 'коммит v' + commits + ': файл лёг целиком (+' + fmt(size) + '). изменений — пара строк, а хранится весь файл.';
+    render();
+  };
+
+  const gc = () => {
+    if (blobs.length < 2) { note.textContent = 'нужно хотя бы два коммита — упаковывать нечего'; return; }
+    const base = blobs[blobs.length - 1];   // как git: последняя версия — целиком
+    let deltas = 0;
+    for (const b of blobs) {
+      if (b === base) continue;
+      b.delta = Math.max(24, Math.round(b.size * 0.03 + 20));  // похожие файлы — в дельты
+      deltas++;
+    }
+    packed = true;
+    const before = blobs.reduce((s, b) => s + b.size, 0);
+    const after = base.size + blobs.reduce((s, b) => s + (b.delta ?? b.size), 0) - base.size;
+    note.textContent = 'git gc: похожие файлы упакованы в дельты (' + deltas + ' шт). Было ' + fmt(before) + ' — стало ' + fmt(after) + '. В логике — снимки, на диске после упаковки — дельты.';
+    render();
+  };
+
+  const reset = () => {
+    blobs = [];
+    packed = false;
+    commits = 0;
+    note.textContent = '';
+    render();
+  };
+
+  $('commit').onclick = commit;
+  $('gc').onclick = gc;
+  $('reset').onclick = reset;
+  file.addEventListener('input', () => { fsize.textContent = fmt(bytes()); });
+  render();
+</script>
+</body>
+</html>
